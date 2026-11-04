@@ -1,4 +1,4 @@
-import 'dotenv/config'
+Jimport 'dotenv/config'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import mysql from 'mysql2/promise'
@@ -8,6 +8,7 @@ import { createMysqlTestServer, sendApiRequest } from './helpers/mysql-test-serv
 test('cadastro, perfil médico, senha de consulta e liberação de QR', async (context) => {
   const { baseUrl, mysqlConfig, testDatabase } = await createMysqlTestServer(context)
   const send = (path, options) => sendApiRequest(baseUrl, path, options)
+  const port = new URL(baseUrl).port
 
   const missingRoute = await send('/api/route-that-does-not-exist')
   assert.equal(missingRoute.response.status, 404)

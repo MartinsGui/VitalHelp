@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 import mysql from 'mysql2/promise'
 import { createMysqlTestServer } from './helpers/mysql-test-server.js'
@@ -112,13 +113,17 @@ test('mantém a senha e os tokens de sessão somente em formatos não reversíve
     assert.equal(users[0].password_hash.includes('strong-account-password'), false)
 
     const [sessions] = await connection.execute(
-      'SELECT scope, token_hash FROM auth_sessions WHERE user_id = (SELECT id FROM users WHERE email = ?)',
+      'SELECT scope, token_hash, expires_at FROM auth_sessions WHERE user_id = (SELECT id FROM users WHERE email = ?)',
       ['session-storage@example.com'],
     )
     assert.equal(sessions.length, 1)
     assert.equal(sessions[0].scope, 'account')
     assert.equal(Buffer.from(sessions[0].token_hash).length, 32)
-    assert.notEqual(Buffer.from(sessions[0].token_hash).toString('hex'), rawToken)
+    assert.deepEqual(
+      Buffer.from(sessions[0].token_hash),
+      createHash('sha256').update(rawToken).digest(),
+    )
+    assert.ok(new Date(sessions[0].expires_at) > new Date())
   } finally {
     await connection.end()
   }
