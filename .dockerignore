@@ -1,0 +1,10 @@
+.env
+.git
+.github
+node_modules
+frontEnd/node_modules
+frontEnd/dist
+backEnd/*.sqlite
+backEnd/*.sqlite-*
+tests
+README.md

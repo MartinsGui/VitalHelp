@@ -1,0 +1,32 @@
+{
+  "name": "vitalhelp",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n API,WEB \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "tsx watch backEnd/server.ts",
+    "dev:web": "vite frontEnd --config frontEnd/vite.config.ts --host 0.0.0.0",
+    "build": "npm run build:api && vite build frontEnd --config frontEnd/vite.config.ts",
+    "build:api": "tsc -p tsconfig.json && mkdir -p dist/backEnd/migrations && cp backEnd/migrations/*.sql dist/backEnd/migrations/",
+    "test": "npm run build:api && node --test"
+  },
+  "dependencies": {
+    "argon2": "^0.45.2",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "google-auth-library": "^10.3.0",
+    "mysql2": "^3.24.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.4",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.19.2",
+    "concurrently": "^10.0.6",
+    "qrcode": "^1.5.4",
+    "tailwindcss": "^4.3.4",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5"
+  }
+}
