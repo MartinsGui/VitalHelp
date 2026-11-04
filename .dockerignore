@@ -4,7 +4,7 @@
 node_modules
 frontEnd/node_modules
 frontEnd/dist
+tests
 backEnd/*.sqlite
 backEnd/*.sqlite-*
-tests
 README.md

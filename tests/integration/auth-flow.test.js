@@ -1,104 +1,13 @@
 import 'dotenv/config'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import { once } from 'node:events'
-import { randomUUID } from 'node:crypto'
-import { createServer } from 'node:net'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
 import mysql from 'mysql2/promise'
 import test from 'node:test'
-
-const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)))
-
-async function getAvailablePort() {
-  const server = createServer()
-  server.listen(0, '127.0.0.1')
-  await once(server, 'listening')
-  const { port } = server.address()
-  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
-  return port
-}
-
-async function waitForApi(baseUrl, child, getLogs) {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    if (child.exitCode !== null) throw new Error(`API encerrou ao iniciar: ${getLogs()}`)
-    try {
-      const response = await fetch(`${baseUrl}/api/config`)
-      if (response.ok) return
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    }
-  }
-  throw new Error(`API não iniciou a tempo: ${getLogs()}`)
-}
+import { createMysqlTestServer, sendApiRequest } from './helpers/mysql-test-server.js'
 
 test('cadastro, perfil médico, senha de consulta e liberação de QR', async (context) => {
-  const testDatabase = `vitalhelp_test_${randomUUID().replaceAll('-', '')}`
-  const testUser = process.env.MYSQL_TEST_USER ?? 'root'
-  const testPassword = process.env.MYSQL_TEST_PASSWORD ?? process.env.MYSQL_ROOT_PASSWORD
-  if (!testPassword) {
-    throw new Error('Configure MYSQL_TEST_PASSWORD ou MYSQL_ROOT_PASSWORD para executar os testes.')
-  }
-  const mysqlConfig = {
-    host: process.env.MYSQL_HOST ?? '127.0.0.1',
-    port: Number(process.env.MYSQL_PORT ?? 3306),
-    user: testUser,
-    password: testPassword,
-  }
-  if (!['127.0.0.1', 'localhost'].includes(mysqlConfig.host)) {
-    throw new Error('Os testes de integração só podem usar um MySQL local para não alterar bancos remotos.')
-  }
-  const admin = await mysql.createConnection(mysqlConfig)
-  await admin.query('CREATE DATABASE ?? CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci', [testDatabase])
-  const port = await getAvailablePort()
-  const baseUrl = `http://127.0.0.1:${port}`
-  const child = spawn(process.execPath, [join(projectRoot, 'dist/backEnd/server.js')], {
-    cwd: projectRoot,
-    env: {
-      ...process.env,
-      MYSQL_HOST: mysqlConfig.host,
-      MYSQL_PORT: String(mysqlConfig.port),
-      MYSQL_DATABASE: testDatabase,
-      MYSQL_USER: mysqlConfig.user,
-      MYSQL_PASSWORD: mysqlConfig.password,
-      FRONTEND_ORIGIN: baseUrl,
-      PUBLIC_FRONTEND_URL: 'http://192.168.1.25:5173',
-      GOOGLE_CLIENT_ID: 'test-client-id.apps.googleusercontent.com',
-      SESSION_SECRET: 'test-session-secret-that-is-at-least-32-bytes',
-      PORT: String(port),
-      NODE_ENV: 'development',
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-
-  let logs = ''
-  child.stdout.setEncoding('utf8').on('data', (data) => { logs += data })
-  child.stderr.setEncoding('utf8').on('data', (data) => { logs += data })
-  context.after(async () => {
-    if (child.exitCode === null) {
-      child.kill('SIGTERM')
-      await once(child, 'exit')
-    }
-    await admin.query('DROP DATABASE ??', [testDatabase])
-    await admin.end()
-  })
-
-  await waitForApi(baseUrl, child, () => logs)
-
-  async function send(path, { method = 'GET', body, cookie, origin = baseUrl } = {}) {
-    const response = await fetch(`${baseUrl}${path}`, {
-      method,
-      headers: {
-        Origin: origin,
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-        ...(cookie ? { Cookie: cookie } : {}),
-      },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    })
-    const result = response.status === 204 ? null : await response.json()
-    return { response, result, cookie: response.headers.get('set-cookie')?.split(';')[0] }
-  }
+  const { baseUrl, mysqlConfig, testDatabase } = await createMysqlTestServer(context)
+  const send = (path, options) => sendApiRequest(baseUrl, path, options)
 
   const missingRoute = await send('/api/route-that-does-not-exist')
   assert.equal(missingRoute.response.status, 404)
@@ -111,6 +20,37 @@ test('cadastro, perfil médico, senha de consulta e liberação de QR', async (c
   assert.equal(signup.response.status, 200, JSON.stringify(signup.result))
   assert.ok(signup.cookie)
   assert.match(signup.cookie, /^vitalhelp_session=[A-Za-z0-9_-]{43}$/)
+  assert.match(signup.response.headers.get('set-cookie'), /HttpOnly/i)
+  assert.match(signup.response.headers.get('set-cookie'), /SameSite=Lax/i)
+  const duplicateSignup = await send('/api/auth/signup', {
+    method: 'POST',
+    body: { name: 'Another Account', email: 'marina@example.com', password: 'account-pass-123' },
+  })
+  assert.equal(duplicateSignup.response.status, 409)
+
+  const accountConnection = await mysql.createConnection({
+    ...mysqlConfig,
+    database: testDatabase,
+  })
+  const rawSessionToken = signup.cookie.slice(signup.cookie.indexOf('=') + 1)
+  const [storedAccount] = await accountConnection.execute(
+    'SELECT password_hash FROM users WHERE email = ?',
+    ['marina@example.com'],
+  )
+  const [storedAccountSession] = await accountConnection.execute(`
+    SELECT token_hash
+    FROM auth_sessions
+    WHERE scope = 'account' AND user_id = (
+      SELECT id FROM users WHERE email = ?
+    )
+  `, ['marina@example.com'])
+  assert.match(storedAccount[0].password_hash, /^\$argon2id\$/)
+  assert.equal(storedAccountSession.length, 1)
+  assert.deepEqual(
+    Buffer.from(storedAccountSession[0].token_hash),
+    createHash('sha256').update(rawSessionToken).digest(),
+  )
+  await accountConnection.end()
   let status = await send('/api/me', { cookie: signup.cookie })
   assert.equal(status.response.status, 200)
   assert.equal(status.result.profileComplete, false)
@@ -172,6 +112,17 @@ test('cadastro, perfil médico, senha de consulta e liberação de QR', async (c
   assert.equal(savedProfile.result.canViewQr, false)
   assert.deepEqual(savedProfile.result.profile.medications, profile.medications)
   assert.equal((await send('/api/qr', { cookie: signup.cookie })).response.status, 403)
+  const profileConnection = await mysql.createConnection({
+    ...mysqlConfig,
+    database: testDatabase,
+  })
+  const [storedClinicalData] = await profileConnection.execute(
+    'SELECT allergies FROM medical_profiles WHERE user_id = ?',
+    [signup.result.user.id],
+  )
+  assert.ok(storedClinicalData[0].allergies)
+  assert.equal(storedClinicalData[0].allergies.includes('Alergia de teste confidencial'), false)
+  await profileConnection.end()
 
   const legacyMedicationProfile = await send('/api/profile', {
     method: 'PUT',
@@ -216,7 +167,10 @@ test('cadastro, perfil médico, senha de consulta e liberação de QR', async (c
     ...mysqlConfig,
     database: testDatabase,
   })
-  await testConnection.execute('UPDATE users SET medical_profile = ?', ['not-valid-ciphertext'])
+  await testConnection.execute(
+    'UPDATE medical_profiles SET allergies = ? WHERE user_id = ?',
+    ['not-valid-ciphertext', signup.result.user.id],
+  )
   await testConnection.end()
   status = await send('/api/me', { cookie: signup.cookie })
   assert.equal(status.response.status, 200)
@@ -324,6 +278,32 @@ test('cadastro, perfil médico, senha de consulta e liberação de QR', async (c
   assert.equal((await send(`/api/public/${publicId}/profile`, {
     cookie: publicProfile.cookie,
   })).response.status, 401)
+  const refreshedPublicSession = await send(`/api/public/${publicId}/unlock`, {
+    method: 'POST',
+    body: { password: secondCode.result.consultationPassword },
+  })
+  assert.equal(refreshedPublicSession.response.status, 200)
+  const publicLogout = await send('/api/public/logout', {
+    method: 'POST',
+    cookie: refreshedPublicSession.cookie,
+  })
+  assert.equal(publicLogout.response.status, 204)
+  assert.equal((await send(`/api/public/${publicId}/profile`, {
+    cookie: refreshedPublicSession.cookie,
+  })).response.status, 401)
+
+  const logout = await send('/api/logout', {
+    method: 'POST',
+    cookie: signup.cookie,
+  })
+  assert.equal(logout.response.status, 204)
+  assert.equal((await send('/api/me', { cookie: signup.cookie })).response.status, 401)
+  const restoredAccountSession = await send('/api/auth/login', {
+    method: 'POST',
+    body: { email: 'marina@example.com', password: 'account-pass-123' },
+  })
+  assert.equal(restoredAccountSession.response.status, 200)
+  signup.cookie = restoredAccountSession.cookie
 
   const deletedProfile = await send('/api/account', {
     method: 'DELETE',

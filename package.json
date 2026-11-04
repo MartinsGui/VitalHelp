@@ -8,7 +8,9 @@
     "dev:web": "vite frontEnd --config frontEnd/vite.config.ts --host 0.0.0.0",
     "build": "npm run build:api && vite build frontEnd --config frontEnd/vite.config.ts",
     "build:api": "tsc -p tsconfig.json && mkdir -p dist/backEnd/migrations && cp backEnd/migrations/*.sql dist/backEnd/migrations/",
-    "test": "npm run build:api && node --test"
+    "test": "npm run build:api && node --test tests/unit/*.test.js && node --test tests/integration/*.test.js",
+    "test:unit": "npm run build:api && node --test tests/unit/*.test.js",
+    "test:integration": "npm run build:api && node --test tests/integration/*.test.js"
   },
   "dependencies": {
     "argon2": "^0.45.2",
